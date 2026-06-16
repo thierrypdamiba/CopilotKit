@@ -34,6 +34,15 @@ import { MessageList } from "./message-list";
 import { SuggestionBar } from "./suggestion-bar";
 import { TypingIndicator } from "./typing-indicator";
 
+function createMessageId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `msg-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+}
+
 export function Chat({ agentId }: { agentId: string }) {
   // @region[page-send-message]
   const { agent } = useAgent({ agentId });
@@ -74,7 +83,7 @@ export function Chat({ agentId }: { agentId: string }) {
 
       const content = buildContent(trimmed, ready);
       agent.addMessage({
-        id: crypto.randomUUID(),
+        id: createMessageId(),
         role: "user",
         content,
       });

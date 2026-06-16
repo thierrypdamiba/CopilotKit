@@ -21,6 +21,7 @@ const AGENT_URL = process.env.AGENT_URL || "http://localhost:8000";
 
 const agents: Record<string, AbstractAgent> = {
   "mcp-apps": new HttpAgent({ url: `${AGENT_URL}/` }),
+  "headless-complete": new HttpAgent({ url: `${AGENT_URL}/headless-complete` }),
 };
 
 // @region[runtime-mcpapps-config]

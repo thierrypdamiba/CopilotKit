@@ -24,7 +24,7 @@ interface SubagentsAgentState {
 
 export default function SubagentsDemo() {
   return (
-    <CopilotKit runtimeUrl="/api/copilotkit-subagents" agent="subagents">
+    <CopilotKit runtimeUrl="/api/copilotkit" agent="subagents">
       <DemoContent />
     </CopilotKit>
   );

@@ -9,10 +9,10 @@
  *      `[data-testid="copilot-chat-input"]` still get probed).
  *   2. Fill the input, press Enter.
  *   3. Wait for the assistant response to "settle" — defined as no growth
- *      in the assistant-message DOM count for `assistantSettleMs` ms
- *      (default 1500). Polls via `page.evaluate` so the DOM read is
- *      synchronous on the browser side and not blocked by Playwright's
- *      auto-wait machinery.
+ *      in the assistant-message DOM count and no visible assistant-text
+ *      mutation for `assistantSettleMs` ms (default 1500). Polls via
+ *      `page.evaluate` so the DOM read is synchronous on the browser side
+ *      and not blocked by Playwright's auto-wait machinery.
  *   4. Run the turn's optional `assertions(page)` callback.
  *
  * On any failure (chat-input not found, fill/press throw, response
@@ -336,9 +336,10 @@ export interface ConversationRunnerOptions {
   chatInputSelector?: string;
   /**
    * Quiet window for "response complete" detection. The runner polls
-   * the assistant-message DOM count every ~100 ms; once the count is
-   * positive AND has not grown for `assistantSettleMs` ms, the
-   * response is considered complete. Default 1500 ms.
+   * the assistant-message DOM count and visible text every ~100 ms; once
+   * the count has grown past baseline AND neither count nor text has
+   * changed for `assistantSettleMs` ms, the response is considered
+   * complete. Default 1500 ms.
    */
   assistantSettleMs?: number;
 }
@@ -980,6 +981,51 @@ async function readMessageCount(page: Page): Promise<number> {
 }
 
 /**
+ * Read the concatenated assistant-message text used for settle detection.
+ *
+ * Count-only settle is too optimistic for streaming agents: a long response
+ * can keep mutating inside one existing assistant bubble after the bubble
+ * count has stopped changing. The runner therefore also tracks this visible
+ * transcript fingerprint and resets the quiet window while it changes.
+ */
+async function readAssistantMessageText(page: Page): Promise<string> {
+  try {
+    return await page.evaluate(() => {
+      const marker = "copilot-assistant-text-fingerprint";
+      void marker;
+      const win = globalThis as unknown as {
+        document: {
+          querySelectorAll(
+            sel: string,
+          ): ArrayLike<{ textContent: string | null }>;
+        };
+      };
+      const selectorGroups = [
+        '[data-testid="copilot-assistant-message"]',
+        '[role="article"][data-message-role="assistant"]',
+        '[role="article"]:not([data-message-role="user"])',
+        '[data-message-role="assistant"]',
+      ];
+      let nodes: ArrayLike<{ textContent: string | null }> = { length: 0 };
+      for (const selector of selectorGroups) {
+        const found = win.document.querySelectorAll(selector);
+        if (found.length > 0) {
+          nodes = found;
+          break;
+        }
+      }
+      let acc = "";
+      for (let i = 0; i < nodes.length; i++) {
+        acc += "\n" + (nodes[i]!.textContent ?? "");
+      }
+      return acc;
+    });
+  } catch {
+    return "";
+  }
+}
+
+/**
  * Read whether a chat error banner (`[data-testid="copilot-error-banner"]`)
  * is currently VISIBLE in the page, and return its FULL text when present.
  * Visibility (not mere presence) matters: a banner kept in the DOM but
@@ -1041,14 +1087,15 @@ async function readErrorBanner(
 
 /**
  * Block until the assistant-message count has grown past `baselineCount`
- * AND remained stable for `settleMs`, OR until `timeoutMs` elapses.
+ * AND both count and assistant text have remained stable for `settleMs`,
+ * OR until `timeoutMs` elapses.
  * Returns the final stable count on success. Throws a `timeout` Error
  * on deadline.
  *
  * Algorithm: poll at `POLL_INTERVAL_MS`. Track `lastChangeAt` — the
- * timestamp of the most recent count change. If the current poll's
- * count is positive, has surpassed baseline, and `now - lastChangeAt
- * >= settleMs`, the response has settled.
+ * timestamp of the most recent count OR assistant-text change. If the
+ * current poll's count is positive, has surpassed baseline, and
+ * `now - lastChangeAt >= settleMs`, the response has settled.
  *
  * Fast-fail (ONE unified rule). Each poll also checks the chat error banner
  * (`[data-testid="copilot-error-banner"]`). We snapshot the banner's
@@ -1100,6 +1147,7 @@ async function waitForAssistantSettled(opts: {
   const { page, baselineCount, settleMs, timeoutMs } = opts;
   const deadline = Date.now() + timeoutMs;
   let lastCount = await readMessageCount(page);
+  let lastAssistantText = await readAssistantMessageText(page);
   let lastChangeAt = Date.now();
   let pollCount = 0;
   let lastLoggedCount = lastCount;
@@ -1122,6 +1170,7 @@ async function waitForAssistantSettled(opts: {
   console.debug("[conversation-runner] waitForAssistantSettled — start", {
     baselineCount,
     initialCount: lastCount,
+    initialTextLength: lastAssistantText.length,
     settleMs,
     timeoutMs,
     bannerVisibleAtBaseline,
@@ -1132,6 +1181,10 @@ async function waitForAssistantSettled(opts: {
     await sleep(POLL_INTERVAL_MS);
 
     const current = await readMessageCount(page);
+    const currentAssistantText =
+      current > baselineCount
+        ? await readAssistantMessageText(page)
+        : lastAssistantText;
     pollCount++;
 
     // Unified fast-fail rule. Compute a single boolean: an error banner is
@@ -1179,29 +1232,35 @@ async function waitForAssistantSettled(opts: {
       consecutiveErrorPolls = 0;
     }
 
-    if (current !== lastCount) {
+    const textChanged = currentAssistantText !== lastAssistantText;
+    if (current !== lastCount || textChanged) {
       console.debug(
-        "[conversation-runner] waitForAssistantSettled — message count changed",
+        "[conversation-runner] waitForAssistantSettled — assistant output changed",
         {
           previous: lastCount,
           current,
           baselineCount,
+          textChanged,
+          previousTextLength: lastAssistantText.length,
+          currentTextLength: currentAssistantText.length,
           pollCount,
           elapsedMs: Date.now() - (deadline - timeoutMs),
         },
       );
       lastCount = current;
+      lastAssistantText = currentAssistantText;
       lastLoggedCount = current;
       lastChangeAt = Date.now();
       continue;
     }
-    // Stable. Settled iff (a) we've grown past baseline AND (b) the
-    // quiet window has elapsed. "Stable at baseline" means no response
-    // arrived yet — keep polling.
+    // Stable. Settled iff (a) we've grown past baseline AND (b) neither
+    // count nor assistant text has changed for the quiet window. "Stable at
+    // baseline" means no response arrived yet — keep polling.
     if (current > baselineCount && Date.now() - lastChangeAt >= settleMs) {
       console.debug("[conversation-runner] waitForAssistantSettled — settled", {
         count: current,
         baselineCount,
+        textLength: currentAssistantText.length,
         quietWindowMs: Date.now() - lastChangeAt,
         totalPollCount: pollCount,
         totalElapsedMs: Date.now() - (deadline - timeoutMs),

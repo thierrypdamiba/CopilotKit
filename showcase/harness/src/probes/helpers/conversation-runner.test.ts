@@ -34,6 +34,10 @@ interface PageScript {
   // the next value from the queue; if the queue is exhausted the last
   // value repeats forever (so a "stable" tail can be modelled trivially).
   evaluateValues?: number[];
+  // Scripted assistant transcript fingerprints for settle detection. When
+  // omitted, text reads return a stable empty string so existing count-only
+  // tests keep their behavior.
+  assistantTextValues?: string[];
   // Optional override for `page.evaluate` so tests can spy on its
   // semantics directly when they need to.
   evaluate?: (fn: () => unknown) => Promise<unknown>;
@@ -90,6 +94,9 @@ function wrapEvaluateForUserMessages(
     if (body.includes("copilot-user-message")) {
       return userCalls++ as never;
     }
+    if (body.includes("copilot-assistant-text-fingerprint")) {
+      return "" as never;
+    }
     // Error-banner visibility probe: these helpers never simulate a
     // banner, so return the runner-expected `{ visible: false }` shape
     // explicitly. Previously this read fell through to `inner(fn)`, which
@@ -121,6 +128,7 @@ function shapeBannerProbeText(text: string): string {
 
 function makePage(script: PageScript = {}): Page {
   const queue = [...(script.evaluateValues ?? [])];
+  const assistantTextQueue = [...(script.assistantTextValues ?? [])];
   const userQueue = [...(script.userMessageValues ?? [])];
   const inputQueue = [...(script.inputValues ?? [])];
   const errorBannerQueue = [...(script.errorBannerValues ?? [])];
@@ -172,6 +180,13 @@ function makePage(script: PageScript = {}): Page {
           ...(visible ? { text: shapeBannerProbeText(resolved!) } : {}),
         } as never;
       }
+      if (fnBody.includes("copilot-assistant-text-fingerprint")) {
+        if (assistantTextQueue.length === 0) return "" as never;
+        if (assistantTextQueue.length === 1) {
+          return assistantTextQueue[0]! as never;
+        }
+        return assistantTextQueue.shift()! as never;
+      }
       if (fnBody.includes("copilot-user-message")) {
         if (userQueue.length > 0) {
           if (userQueue.length === 1) return userQueue[0]! as never;
@@ -213,6 +228,8 @@ function makePage(script: PageScript = {}): Page {
           async reload(): Promise<void> {
             queue.length = 0;
             queue.push(...(script.evaluateValues ?? []));
+            assistantTextQueue.length = 0;
+            assistantTextQueue.push(...(script.assistantTextValues ?? []));
             errorBannerQueue.length = 0;
             errorBannerQueue.push(...(script.errorBannerValues ?? []));
             autoUserCalls = 0;
@@ -306,6 +323,48 @@ describe("runConversation", () => {
     // per-test timeout keeps it clear of vitest's 5000ms default on a
     // loaded CI runner.
   }, 20_000);
+
+  it("waits for assistant text mutations to settle, not only message count", async () => {
+    const recorded = { fills: [] as string[], presses: [] as string[] };
+    const countValues = [0, 1, 1, 1, 1, 1, 1, 1];
+    const textValues = ["", "h", "he", "hel", "hello", "hello", "hello"];
+    let countCalls = 0;
+    let textCalls = 0;
+    let userCalls = 0;
+
+    const page = makePage({
+      recorded,
+      async evaluate(fn) {
+        const body = fn.toString();
+        if (body.includes("copilot-error-banner")) {
+          return { visible: false };
+        }
+        if (body.includes("copilot-user-message")) {
+          return userCalls++ === 0 ? 0 : 1;
+        }
+        if (body.includes("copilot-assistant-text-fingerprint")) {
+          textCalls++;
+          if (textValues.length === 1) return textValues[0]!;
+          return textValues.shift()!;
+        }
+        countCalls++;
+        if (countValues.length === 1) return countValues[0]!;
+        return countValues.shift()!;
+      },
+    });
+
+    const result = await runConversation(
+      page,
+      [{ input: "stream a long answer" }],
+      { assistantSettleMs: 150 },
+    );
+
+    expect(result.turns_completed).toBe(1);
+    expect(result.error).toBeUndefined();
+    expect(countCalls).toBeGreaterThan(1);
+    expect(textCalls).toBeGreaterThan(3);
+    expect(recorded.fills).toEqual(["stream a long answer"]);
+  });
 
   it("turn-2 assertion failure: returns failure_turn=2 and error, stops further turns", async () => {
     const recorded = { fills: [] as string[], presses: [] as string[] };

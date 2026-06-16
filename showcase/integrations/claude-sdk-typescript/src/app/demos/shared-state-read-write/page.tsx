@@ -29,10 +29,7 @@ interface RWAgentState {
 
 export default function SharedStateReadWriteDemo() {
   return (
-    <CopilotKit
-      runtimeUrl="/api/copilotkit-shared-state-read-write"
-      agent="shared-state-read-write"
-    >
+    <CopilotKit runtimeUrl="/api/copilotkit" agent="shared-state-read-write">
       <DemoContent />
     </CopilotKit>
   );

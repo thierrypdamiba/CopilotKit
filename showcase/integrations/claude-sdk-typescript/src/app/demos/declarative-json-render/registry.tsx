@@ -20,4 +20,5 @@ export const { registry } = defineRegistry(catalog, {
       <PieChart {...(props as PieChartComponentProps)} />
     ),
   },
+  actions: {},
 });

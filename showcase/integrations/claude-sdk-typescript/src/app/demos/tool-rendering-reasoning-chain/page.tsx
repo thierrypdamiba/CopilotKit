@@ -48,7 +48,7 @@ interface FlightSearchResult {
 export default function ToolRenderingReasoningChainDemo() {
   return (
     <CopilotKit
-      runtimeUrl="/api/copilotkit-reasoning"
+      runtimeUrl="/api/copilotkit"
       agent="tool-rendering-reasoning-chain"
     >
       <div className="flex justify-center items-center h-screen w-full">

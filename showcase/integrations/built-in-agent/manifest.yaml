@@ -58,7 +58,10 @@ features:
   - a2ui-fixed-schema
 not_supported_features:
   - hitl
+  - shared-state-read
   - shared-state-streaming
+  - declarative-json-render
+  - declarative-hashbrown
   # QUARANTINED pending a @copilotkit/react-core release. gen-ui-interrupt /
   # interrupt-headless fail turn-2 due to a useInterrupt/useHeadlessInterrupt
   # RESUME-PATH hook bug in @copilotkit/react-core/v2: the backend resumes and

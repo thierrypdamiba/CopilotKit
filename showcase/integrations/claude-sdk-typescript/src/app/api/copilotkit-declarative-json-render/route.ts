@@ -18,7 +18,7 @@ import { AbstractAgent, HttpAgent } from "@ag-ui/client";
 const AGENT_URL = process.env.AGENT_URL || "http://localhost:8000";
 
 const agents: Record<string, AbstractAgent> = {
-  declarative_json_render: new HttpAgent({
+  byoc_json_render: new HttpAgent({
     url: `${AGENT_URL}/byoc-json-render`,
   }),
 };
